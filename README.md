@@ -4,7 +4,7 @@ Talk to your [HEY](https://hey.com) email from Claude, Cursor, or any MCP client
 
 A self-hosted MCP server (Ruby + Docker) wrapping the official [hey-cli](https://github.com/basecamp/hey-cli) — real OAuth against `app.hey.com`, not a browser scrape.
 
-**What you get:** read mailboxes and threads, compose/reply, mark seen/unseen, manage todos, habits, calendar, time tracking, and journal — 29 tools in total.
+**What you get:** read and search mailboxes and threads, compose/reply, mark seen/unseen, manage todos, habits, calendar, time tracking, and journal — 30 tools in total. Email lists come back as compact rows (dozens per response) with offset pagination and text/date search, which the raw CLI doesn't offer.
 
 ## Quick start
 
@@ -44,7 +44,7 @@ That's it. Everything below is optional depth.
 |------|--------|
 | Skill | `hey_skill` |
 | Auth / diagnostics | `hey_auth_status`, `hey_auth_token`, `hey_doctor`, `hey_config_show` |
-| Email | `hey_boxes`, `hey_box`, `hey_threads`, `hey_drafts`, `hey_compose`, `hey_reply`, `hey_seen`, `hey_unseen` |
+| Email | `hey_boxes`, `hey_box`, `hey_search`, `hey_threads`, `hey_drafts`, `hey_compose`, `hey_reply`, `hey_seen`, `hey_unseen` |
 | Calendar | `hey_calendars`, `hey_recordings` |
 | Todos | `hey_todo_list`, `hey_todo_add`, `hey_todo_complete`, `hey_todo_uncomplete`, `hey_todo_delete` |
 | Habits | `hey_habit_complete`, `hey_habit_uncomplete` |
@@ -52,6 +52,8 @@ That's it. Everything below is optional depth.
 | Journal | `hey_journal_list`, `hey_journal_read`, `hey_journal_write` |
 
 **IDs:** `hey_box` returns posting `id` (for seen/unseen) and `topic_id` (for threads/reply).
+
+**Efficient listing:** `hey_box` and `hey_search` return compact rows (`{id, topic_id, subject, from, date, seen, summary}`, ~300 bytes each) instead of the raw ~4 KB CLI postings, with `offset` pagination. `hey_search` adds text matching (subject/sender/contacts/summary), `after`/`before` date filters, and `unseen_only` — none of which exist in the CLI itself.
 
 The official hey-cli agent skill is vendored and exposed as resource `hey://skill` and tool `hey_skill` — agents should read it before complex workflows.
 

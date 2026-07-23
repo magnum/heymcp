@@ -135,6 +135,38 @@ def clean(value)
   v.empty? ? nil : v
 end
 
+# Fetch a box and return compact rows (see HeyClient.compact_box_json).
+# The CLI has no offset/search, so we over-fetch (up to 500, or --all when
+# deep/fetch_all) and slice/filter locally.
+def compact_box_call(box, offset: 0, limit: 20, fetch_all: false, deep: false,
+                     query: nil, unseen_only: false, after: nil, before: nil)
+  offset = [offset.to_i, 0].max
+  limit = limit.to_i.clamp(1, 200)
+  searching = clean(query) || unseen_only || after || before
+
+  args =
+    if fetch_all || deep
+      HeyClient.cmd_box(box, nil, fetch_all: true)
+    elsif searching || offset + limit > 500
+      HeyClient.cmd_box(box, 500)
+    else
+      HeyClient.cmd_box(box, offset + limit)
+    end
+
+  raw = HeyClient.run(args, truncate: false)
+  tool_text(
+    HeyClient.truncate(
+      HeyClient.compact_box_json(
+        raw,
+        offset: offset, limit: limit, query: clean(query),
+        unseen_only: unseen_only, after: clean(after), before: clean(before),
+      ),
+    ),
+  )
+rescue HeyClient::HeyError => e
+  tool_text("ERROR: #{e.message}")
+end
+
 # --- MCP server ---------------------------------------------------------------
 
 MCP_SERVER = MCP::Server.new(
@@ -142,6 +174,8 @@ MCP_SERVER = MCP::Server.new(
   version: "1.0.0",
   instructions:
     "HEY email MCP. Before complex workflows call hey_skill. " \
+    "Listing/searching email: hey_box returns compact rows and paginates with " \
+    "offset; use hey_search for text/date/unseen filters. " \
     "For hey_compose / hey_reply ALWAYS pass `paragraphs` as an array of short " \
     "paragraphs (greeting, body blocks, numbered options, closing, signature). " \
     "Never send the whole email as one unbroken line in `message`.",
@@ -212,19 +246,59 @@ end
 
 MCP_SERVER.define_tool(
   name: "hey_box",
-  description: "List postings in a mailbox (`hey box <name|id> --json`). Each posting has `id` " \
-               "(posting ID for seen/unseen) and `topic_id` (for threads/reply).",
+  description: "List postings in a mailbox. Returns compact rows by default " \
+               "({id, topic_id, subject, from, date, seen, summary}) so dozens of emails fit in " \
+               "one response; paginate with offset. `id` is for seen/unseen, `topic_id` for " \
+               "threads/reply. Set compact=false for the raw CLI JSON (heavy: ~3 postings max).",
   input_schema: {
     properties: {
       name_or_id: string_prop("mailbox name or numeric ID (default imbox)"),
-      limit: int_prop("max postings (default 20)"),
-      fetch_all: bool_prop("pass --all"),
+      limit: int_prop("max postings per page (default 20)"),
+      offset: int_prop("skip N most recent postings (pagination; default 0)"),
+      fetch_all: bool_prop("scan the whole box instead of the 500 most recent"),
+      compact: bool_prop("compact rows (default true); false = raw CLI JSON"),
     },
     required: [],
   },
-) do |name_or_id: "imbox", limit: 20, fetch_all: false, **|
-  require_value(name_or_id, "name_or_id") ||
+) do |name_or_id: "imbox", limit: 20, offset: 0, fetch_all: false, compact: true, **|
+  if (err = require_value(name_or_id, "name_or_id"))
+    err
+  elsif compact
+    compact_box_call(name_or_id.strip, offset: offset, limit: limit, fetch_all: fetch_all)
+  else
     call_hey(HeyClient.cmd_box(name_or_id.strip, limit, fetch_all: fetch_all))
+  end
+end
+
+MCP_SERVER.define_tool(
+  name: "hey_search",
+  description: "Search emails in a mailbox by text and/or date. Case-insensitive match on " \
+               "subject, sender, contacts (name/email), and summary. The CLI has no native " \
+               "search, so this scans the 500 most recent postings (deep=true scans the whole " \
+               "box). Returns compact rows like hey_box.",
+  input_schema: {
+    properties: {
+      query: string_prop("text to match (subject, sender, contacts, summary); optional if after/before/unseen_only given"),
+      box: string_prop("mailbox name or ID (default imbox)"),
+      limit: int_prop("max results (default 20)"),
+      offset: int_prop("skip N results (pagination; default 0)"),
+      after: string_prop("only postings on/after this date (YYYY-MM-DD)"),
+      before: string_prop("only postings on/before this date (YYYY-MM-DD)"),
+      unseen_only: bool_prop("only unread postings"),
+      deep: bool_prop("scan the entire box, not just the 500 most recent (slower)"),
+    },
+    required: [],
+  },
+) do |query: nil, box: "imbox", limit: 20, offset: 0, after: nil, before: nil, unseen_only: false, deep: false, **|
+  if clean(query).nil? && clean(after).nil? && clean(before).nil? && !unseen_only
+    tool_text("ERROR: provide query, after, before, or unseen_only")
+  else
+    compact_box_call(
+      box.to_s.strip.empty? ? "imbox" : box.strip,
+      offset: offset, limit: limit, deep: deep,
+      query: query, unseen_only: unseen_only, after: after, before: before,
+    )
+  end
 end
 
 MCP_SERVER.define_tool(

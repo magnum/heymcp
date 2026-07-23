@@ -4,6 +4,7 @@
 #
 # Command surface mirrors skills/hey/SKILL.md. Prefer `--json` for structured output.
 
+require "json"
 require "open3"
 
 module HeyClient
@@ -190,8 +191,112 @@ module HeyClient
     end
   end
 
-  # Execute `hey <args>` and return stdout, truncated.
-  def run(args)
+  # --- JSON post-processing (MCP efficiency) --------------------------------
+  #
+  # Raw `hey box --json` postings weigh ~4 KB each (avatars, HTML signatures,
+  # sync URLs...), so only ~3 fit in HEY_MAX_CHARS. These helpers project each
+  # posting down to the fields an agent needs (~200 bytes), letting dozens of
+  # emails fit in one response. They also add offset pagination and search,
+  # which the CLI itself does not offer (only --limit / --all).
+
+  TOPIC_ID_RE = %r{/topics/(\d+)}
+
+  # Postings carry no topic_id field; it must be extracted from app_url.
+  def posting_topic_id(posting)
+    id = posting["topic_id"].to_s
+    return id unless id.empty?
+
+    posting["app_url"].to_s[TOPIC_ID_RE, 1].to_s
+  end
+
+  def compact_posting(posting)
+    from = posting.dig("creator", "name").to_s
+    from = posting["alternative_sender_name"].to_s if from.empty?
+    contacts = Array(posting["contacts"]).map { |c| c["name"].to_s }.reject(&:empty?)
+
+    row = {
+      id: posting["id"],
+      topic_id: posting_topic_id(posting),
+      subject: posting["name"],
+      from: from,
+      date: posting["created_at"],
+      seen: posting["seen"],
+    }
+    row[:contacts] = contacts.first(4).join(", ") if contacts.length > 2
+    summary = posting["summary"].to_s.strip
+    row[:summary] = summary[0, 120] unless summary.empty?
+    row
+  end
+
+  def posting_matches?(posting, needle)
+    haystack = [
+      posting["name"],
+      posting["summary"],
+      posting["alternative_sender_name"],
+      posting.dig("creator", "name"),
+      *Array(posting["contacts"]).flat_map { |c| [c["name"], c["email_address"]] },
+    ].compact.join("\n").downcase
+    haystack.include?(needle)
+  end
+
+  def filter_postings(postings, query: nil, unseen_only: false, after: nil, before: nil)
+    result = postings
+    result = result.reject { |p| p["seen"] } if unseen_only
+    if query && !query.strip.empty?
+      needle = query.strip.downcase
+      result = result.select { |p| posting_matches?(p, needle) }
+    end
+    if after || before
+      result = result.select do |p|
+        date = p["created_at"].to_s[0, 10]
+        next false if date.empty?
+
+        (after.nil? || date >= after) && (before.nil? || date <= before)
+      end
+    end
+    result
+  end
+
+  # Turn a raw `hey box --json` envelope into a compact, paginated JSON string.
+  def compact_box_json(raw, offset: 0, limit: 20, query: nil, unseen_only: false, after: nil, before: nil)
+    env = JSON.parse(raw)
+    data = env["data"] || {}
+    postings = Array(data["postings"])
+    matched = filter_postings(
+      postings,
+      query: query, unseen_only: unseen_only, after: after, before: before,
+    )
+    page = matched[offset, limit] || []
+
+    rows = page.map { |p| compact_posting(p) }
+    payload = nil
+    note = "id → seen/unseen; topic_id → threads/reply"
+
+    # Shrink the page row-by-row instead of cutting mid-string, so the JSON
+    # stays valid; tell the agent where to resume.
+    loop do
+      payload = JSON.generate(
+        box: data["name"],
+        fetched: postings.length,
+        matched: matched.length,
+        offset: offset,
+        count: rows.length,
+        note: note,
+        postings: rows,
+      )
+      break if payload.length <= MAX_CHARS || rows.empty?
+
+      rows.pop
+      note = "page shortened to fit output cap; continue with offset=#{offset + rows.length}"
+    end
+    payload
+  rescue JSON::ParserError
+    raw
+  end
+
+  # Execute `hey <args>` and return stdout, truncated unless the caller
+  # post-processes the JSON itself.
+  def run(args, truncate: true)
     raise HeyError, "binary '#{BIN}' not found in PATH" unless bin_available?
 
     Open3.popen3(BIN, *args) do |stdin, stdout, stderr, wait_thr|
@@ -219,7 +324,7 @@ module HeyClient
         raise HeyError, "hey exited #{status.exitstatus}: #{detail}"
       end
 
-      truncate(out.strip)
+      truncate ? self.truncate(out.strip) : out.strip
     end
   end
 end

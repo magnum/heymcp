@@ -78,6 +78,7 @@ CLI for HEY email: mailboxes, email threads, replies, compose, calendars, todos,
 2. **Authentication required** for all data commands — run `hey auth login` first
 3. **HTML output** is available via `--html` for commands that return HTML content
 4. **Email bodies via MCP:** use `paragraphs` (array) on `hey_compose` / `hey_reply` — never one long unwrapped line
+5. **Listing via MCP:** `hey_box` returns compact rows (`{id, topic_id, subject, from, date, seen, summary}`) and paginates with `offset`; use `hey_search` to filter by text, date (`after`/`before`), or `unseen_only`. Do not set `compact=false` unless you need raw payloads (only ~3 fit per response).
 
 ## Quick Reference
 
@@ -183,6 +184,15 @@ hey compose --to user@example.com --subject "Hi" -m "Body"  # With inline body
 hey compose --to alice@example.com --cc bob@example.com --bcc carol@example.org --subject "Project update" -m "Body"  # With CC/BCC
 hey compose --subject "Update" --thread-id 12345 -m "msg"   # Post to existing thread
 ```
+
+### Email listing & search (MCP)
+
+Raw `hey box --json` postings weigh ~4 KB each, so the MCP server projects them into compact rows and adds what the CLI lacks:
+
+- `hey_box {limit, offset}` — paginate: `offset: 0`, then `offset: 20`, ... The response reports `matched` (total) and, if a page was shortened to fit the output cap, the `note` says which offset to resume from.
+- `hey_search {query, box, after, before, unseen_only, deep}` — case-insensitive match on subject, sender, contacts, and summary; date range via `after`/`before` (YYYY-MM-DD). Scans the 500 most recent postings; `deep: true` scans the whole box (slower).
+- Rows have no `topic_id` in the raw CLI payload; the server extracts it from `app_url` for you. Use `topic_id` for `hey_threads`/`hey_reply`, `id` for `hey_seen`/`hey_unseen`.
+- Example — "summarize yesterday": `hey_search {after: "2026-07-23", before: "2026-07-23", limit: 50}` instead of paging blindly.
 
 ### Email body formatting (MCP — MANDATORY)
 
