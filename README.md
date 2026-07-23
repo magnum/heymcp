@@ -1,22 +1,44 @@
 # heymcp
 
-MCP server that wraps the official [hey-cli](https://github.com/basecamp/hey-cli) so Claude, Cursor, and other MCP clients can talk to [HEY](https://hey.com).
+Talk to your [HEY](https://hey.com) email from Claude, Cursor, or any MCP client.
 
-Runs in Docker. Uses the real CLI (OAuth/token auth against `app.hey.com`) — not a reverse‑engineered browser scrape.
+A self-hosted MCP server (Ruby + Docker) wrapping the official [hey-cli](https://github.com/basecamp/hey-cli) — real OAuth against `app.hey.com`, not a browser scrape.
 
-Repo: [github.com/magnum/heymcp](https://github.com/magnum/heymcp)
+**What you get:** read mailboxes and threads, compose/reply, mark seen/unseen, manage todos, habits, calendar, time tracking, and journal — 29 tools in total.
 
-## Features
+## Quick start
 
-- Full hey-cli surface as MCP tools: mailboxes, threads, compose/reply, seen/unseen, calendars, todos, habits, time tracking, journal
-- Vendored agent skill: resource `hey://skill` + tool `hey_skill` ([upstream skill](https://github.com/basecamp/hey-cli/blob/main/skills/hey/SKILL.md))
-- Auth modes:
-  - **OAuth** for Claude Custom Connectors (login form + Dynamic Client Registration)
-  - **Static bearer** (`MCP_AUTH_TOKEN`) for curl / `mcp-remote` / Claude Code — works even when OAuth is enabled
-- Email bodies via `paragraphs[]` (joined with blank lines) so agents don’t send one run-on blob
-- Optional kill switches: `HEY_ALLOW_SEND` / `HEY_ALLOW_WRITE` (default `true`)
+```bash
+git clone https://github.com/magnum/heymcp && cd heymcp
 
-## Tools
+# 1. Config: a bearer token is the minimum
+cp .env.example .env
+echo "MCP_AUTH_TOKEN=$(openssl rand -hex 32)" >> .env
+
+# 2. Build & run
+docker compose up -d --build
+
+# 3. Log the CLI into HEY (grab the token on any machine where `hey` is logged in: `hey auth token --quiet`)
+docker compose run --rm --no-deps hey-mcp hey auth login --token "PASTE_TOKEN_HERE"
+
+# Verify
+curl -s http://127.0.0.1:8765/healthz
+docker compose exec hey-mcp hey auth status
+```
+
+Then point your MCP client at `http://<host>:8765/mcp` with header `Authorization: Bearer <MCP_AUTH_TOKEN>`:
+
+```bash
+claude mcp add --transport http heymcp http://<host>:8765/mcp \
+  --header "Authorization: Bearer $MCP_AUTH_TOKEN"
+```
+
+That's it. Everything below is optional depth.
+
+---
+
+<details>
+<summary><strong>All tools</strong></summary>
 
 | Area | Tools |
 |------|--------|
@@ -31,58 +53,14 @@ Repo: [github.com/magnum/heymcp](https://github.com/magnum/heymcp)
 
 **IDs:** `hey_box` returns posting `id` (for seen/unseen) and `topic_id` (for threads/reply).
 
-## Quick start
+The official hey-cli agent skill is vendored and exposed as resource `hey://skill` and tool `hey_skill` — agents should read it before complex workflows.
 
-### 1. HEY CLI auth (headless)
+</details>
 
-Authenticate somewhere with a browser, then inject the token into the container volume:
+<details>
+<summary><strong>Claude.ai Custom Connector (OAuth)</strong></summary>
 
-```bash
-# on a machine where you're already logged in
-hey auth token --quiet
-
-# on the Docker host, in this repo
-docker compose up -d --build
-
-docker compose run --rm --no-deps \
-  hey-mcp \
-  hey auth login --token "PASTE_TOKEN_HERE"
-
-docker compose up -d
-docker compose exec hey-mcp hey auth status
-```
-
-Credentials live in the Docker volume `hey-cli-config` (no host `chmod` fights). Anyone with Docker on that host can read your mail — lock down the `docker` group.
-
-### 2. Config
-
-```bash
-cp .env.example .env
-# set MCP_AUTH_TOKEN, and for OAuth also MCP_PUBLIC_URL + MCP_OAUTH_*
-```
-
-Minimal `.env` for LAN / bearer-only:
-
-```bash
-MCP_AUTH_TOKEN=$(openssl rand -hex 32)
-MCP_ALLOWED_HOSTS=localhost,127.0.0.1
-HEY_ALLOW_SEND=true
-HEY_ALLOW_WRITE=true
-```
-
-### 3. Run
-
-```bash
-docker compose up -d --build
-curl -s http://127.0.0.1:8765/healthz
-# {"status":"ok","send_enabled":true,"write_enabled":true,"auth":"..."}
-```
-
-Default publish: `8765:8765`. Prefer `127.0.0.1:8765:8765` if you terminate TLS elsewhere (e.g. Cloudflare Tunnel).
-
-## Claude Custom Connector (OAuth)
-
-Claude.ai custom connectors expect OAuth discovery, not a raw bearer.
+Claude.ai custom connectors expect OAuth discovery, not a raw bearer. The server ships its own OAuth provider (login form + Dynamic Client Registration). Add to `.env`:
 
 ```bash
 MCP_PUBLIC_URL=https://heymcp.example.com
@@ -94,7 +72,6 @@ MCP_AUTH_TOKEN=still_useful_for_curl   # optional API key alongside OAuth
 
 ```bash
 docker compose up -d --build
-curl -s https://heymcp.example.com/healthz
 curl -s https://heymcp.example.com/.well-known/oauth-authorization-server | head
 ```
 
@@ -104,11 +81,16 @@ In Claude → Settings → Connectors → Add custom connector:
 - Auth: OAuth (auto discovery)
 - Sign in with `MCP_OAUTH_USERNAME` / `MCP_OAUTH_PASSWORD`
 
-After tool schema changes, **delete and re-add** the connector so it refreshes `tools/list`.
+Notes:
 
-Put Cloudflare Access (or similar) in front if the hostname is on the public internet. A bearer alone is not enough.
+- After tool schema changes, **delete and re-add** the connector so it refreshes `tools/list`.
+- The static `MCP_AUTH_TOKEN` keeps working alongside OAuth (curl, `mcp-remote`).
+- If the hostname is on the public internet, put Cloudflare Access (or similar) in front.
 
-## Claude Desktop / Claude Code (bearer)
+</details>
+
+<details>
+<summary><strong>Claude Desktop / mcp-remote (bearer)</strong></summary>
 
 ```json
 {
@@ -125,43 +107,61 @@ Put Cloudflare Access (or similar) in front if the hostname is on the public int
 }
 ```
 
-```bash
-claude mcp add --transport http heymcp https://heymcp.example.com/mcp \
-  --header "Authorization: Bearer $MCP_AUTH_TOKEN"
-```
-
 With OAuth enabled you can omit `--header` and let the client run the browser login.
 
-## Compose formatting
+</details>
 
-Prefer `paragraphs` on `hey_compose` / `hey_reply` (one string per paragraph; joined with `\n\n`):
+<details>
+<summary><strong>Configuration reference</strong></summary>
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MCP_AUTH_TOKEN` | — | Static bearer token (curl, mcp-remote) |
+| `MCP_PUBLIC_URL` | — | Public https URL; enables OAuth when set with a password |
+| `MCP_OAUTH_USERNAME` / `MCP_OAUTH_PASSWORD` | `admin` / falls back to `MCP_AUTH_TOKEN` | OAuth login form credentials |
+| `MCP_AUTH_MODE` | `auto` | Force `oauth` or `bearer` |
+| `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Allowed `Host` headers (DNS-rebinding protection; missing host → `421`) |
+| `MCP_TRANSPORT` | `http` | `http` or `stdio` |
+| `MCP_PORT` | `8765` | Listen port |
+| `HEY_ALLOW_SEND` | `true` | Kill switch for compose/reply |
+| `HEY_ALLOW_WRITE` | `true` | Kill switch for seen/unseen, todos, habits, timetrack, journal write |
+| `HEY_TIMEOUT` | `30` | CLI timeout (seconds) |
+| `HEY_MAX_CHARS` | `12000` | Tool output truncation |
+
+Default publish is `8765:8765`; prefer `127.0.0.1:8765:8765` if you terminate TLS elsewhere (e.g. Cloudflare Tunnel).
+
+HEY credentials live in the Docker volume `hey-cli-config`. Anyone with Docker on that host can read your mail — lock down the `docker` group.
+
+</details>
+
+<details>
+<summary><strong>Email formatting</strong></summary>
+
+Prefer `paragraphs` on `hey_compose` / `hey_reply` (one string per paragraph; joined with `\n\n`) so agents don't send one run-on blob:
 
 ```json
 {
   "to": "friend@example.com",
   "subject": "Hello",
-  "paragraphs": [
-    "Hi,",
-    "Short paragraph one.",
-    "Short paragraph two.",
-    "— You"
-  ]
+  "paragraphs": ["Hi,", "Short paragraph one.", "Short paragraph two.", "— You"]
 }
 ```
 
-## Local stdio (no Docker HTTP)
+</details>
+
+<details>
+<summary><strong>Local development (no Docker)</strong></summary>
+
+Requires Ruby and the `hey` CLI in `PATH`. Built on the official [MCP Ruby SDK](https://github.com/modelcontextprotocol/ruby-sdk).
 
 ```bash
-MCP_TRANSPORT=stdio python server.py
+bundle install
+MCP_TRANSPORT=stdio bundle exec ruby server.rb          # stdio
+MCP_AUTH_TOKEN=dev bundle exec ruby server.rb           # http on :8765
 ```
 
-## Notes
-
-- Built on official [hey-cli](https://github.com/basecamp/hey-cli); keep the CLI authenticated inside the container
-- DNS-rebinding protection: list public hostnames in `MCP_ALLOWED_HOSTS` or you get `421 Invalid Host header`
-- Tool output is truncated at `HEY_MAX_CHARS` (default 12000)
-- This is a community project, not affiliated with Basecamp / HEY
+</details>
 
 ## License
 
-Use at your own risk. Respect HEY’s terms and your own privacy threat model.
+[MIT](LICENSE). Community project, not affiliated with Basecamp / HEY. Use at your own risk; respect HEY's terms and your own privacy threat model.
