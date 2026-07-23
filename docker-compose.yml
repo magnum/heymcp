@@ -1,0 +1,21 @@
+services:
+  hey-mcp:
+    build: .
+    container_name: hey-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HEY_NO_KEYRING: "1"
+      # Set HEY_ALLOW_SEND=false in .env to disable compose/reply
+      HEY_ALLOW_SEND: ${HEY_ALLOW_SEND:-true}
+      HEY_ALLOW_WRITE: ${HEY_ALLOW_WRITE:-true}
+    ports:
+      - "8765:8765"
+    volumes:
+      # Docker-managed volume (uid 10001) — no host chmod required
+      - hey-cli-config:/home/heyuser/.config/hey-cli
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  hey-cli-config:
