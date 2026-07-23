@@ -152,7 +152,7 @@ Prefer `paragraphs` on `hey_compose` / `hey_reply` (one string per paragraph; jo
 <details>
 <summary><strong>Local development (no Docker)</strong></summary>
 
-Requires Ruby and the `hey` CLI in `PATH`. Built on the official [MCP Ruby SDK](https://github.com/modelcontextprotocol/ruby-sdk).
+Requires Ruby 4.0.6 (see `.ruby-version`) and the `hey` CLI in `PATH`. Built on the official [MCP Ruby SDK](https://github.com/modelcontextprotocol/ruby-sdk).
 
 ```bash
 bundle install

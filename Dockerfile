@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/hey ./cmd/hey \
     || CGO_ENABLED=0 go build -trimpath -o /out/hey .
 
 # --- Stage 2: runtime ------------------------------------------------------
-FROM ruby:3.4-slim-bookworm
+FROM ruby:4.0.6-slim-bookworm
 
 RUN useradd --create-home --uid 10001 heyuser \
     && apt-get update \
@@ -22,11 +22,16 @@ COPY --from=hey-build /out/hey /usr/local/bin/hey
 
 WORKDIR /app
 COPY Gemfile Gemfile.lock ./
-# Match the bundler major that wrote Gemfile.lock (BUNDLED WITH).
-RUN gem install bundler --no-document \
+# build-essential is needed to compile native extensions (bigdecimal, nio4r,
+# puma), then purged. Bundler is upgraded to match Gemfile.lock (BUNDLED WITH).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && gem install bundler --no-document \
     && bundle config set --local deployment false \
     && bundle config set --local without development \
-    && bundle install --jobs 4
+    && bundle install --jobs 4 \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY hey_client.rb server.rb oauth_provider.rb entrypoint.sh ./
 COPY skills ./skills
